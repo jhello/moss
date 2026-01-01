@@ -1,3 +1,6 @@
+import math
+
+
 class Point:
     def __init__(self, x: float = 0.0, y: float = 0.0, z: float = 0.0) -> None:
         """
@@ -14,7 +17,15 @@ class Point:
 
     def __repr__(self) -> str:
         """Return string representation of the point"""
-        return f"Point3D(x={self.x}, y={self.y}, z={self.z})"
+        return f"Point(x={self.x}, y={self.y}, z={self.z})"
+
+    def __eq__(self, other: "Point") -> bool:
+        """Check if two points are equal based on their coordinates"""
+        return (
+                math.isclose(self.x, other.x, rel_tol=1e-9, abs_tol=1e-12)
+                and math.isclose(self.y, other.y, rel_tol=1e-9, abs_tol=1e-12)
+                and math.isclose(self.z, other.z, rel_tol=1e-9, abs_tol=1e-12)
+        )
 
     def distance_to(self, other: "Point") -> float:
         """

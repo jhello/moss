@@ -1,6 +1,7 @@
 from functools import singledispatch
 from typing import Any
 
+from data.topo import Vertex
 from sources.geometry import Point
 
 
@@ -15,3 +16,8 @@ def _(a: Point, b: Point) -> float:
     dy = a.y - b.y
     dz = a.z - b.z
     return (dx**2 + dy**2 + dz**2) ** 0.5
+
+# Vertex - Vertex
+@distance.register
+def _(a: Vertex, b: Vertex) -> float:
+    return distance(a.location(), b.location())
