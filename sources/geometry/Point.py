@@ -34,35 +34,27 @@ class Point:
             arr = np.asarray(x, dtype=float)
             if arr.shape != (3,):
                 raise ValueError("Array-like input must have exactly 3 elements")
-            self._coords = arr.copy()
+            self.array = arr.copy()
         else:
             # Scalar initialization with defaults
-            self._coords = np.array([
+            self.array = np.array([
                 float(x),
                 0.0 if y is None else float(y),
                 0.0 if z is None else float(z)
             ], dtype=float)
 
-    def __repr__(self) -> str:
-        """Return string representation of the point"""
-        return f"Point({self.x}, {self.y}, {self.z})"
-
-    def __str__(self) -> str:
-        """Return human-readable string representation"""
-        return f"({self.x}, {self.y}, {self.z})"
-
     def __eq__(self, other: object) -> bool:
         """Check if two points are equal with tolerance"""
         if not isinstance(other, Point):
             return NotImplemented
-        return np.allclose(self._coords, other._coords, rtol=1e-9, atol=1e-12)
+        return np.allclose(self.array, other.array, rtol=1e-9, atol=1e-12)
 
     def __add__(self, other: 'Vector') -> 'Point':
         """Add a vector to the point component-wise"""
         if not isinstance(other, Vector):
             return NotImplemented
         result = Point()
-        result._coords = self._coords + other._coords
+        result.array = self.array + other.array
         return result
 
     def __sub__(self, other: Union['Point', 'Vector']) -> Union['Vector', 'Point']:
@@ -75,44 +67,44 @@ class Point:
         if isinstance(other, Point):
             # Point - Point = Vector
             result = Vector()
-            result._coords = self._coords - other._coords
+            result.array = self.array - other.array
             return result
         elif isinstance(other, Vector):
             # Point - Vector = Point
             result = Point()
-            result._coords = self._coords - other._coords
+            result.array = self.array - other.array
             return result
         return NotImplemented
 
     @property
     def x(self) -> float:
         """X coordinate of the point"""
-        return float(self._coords[0])
+        return float(self.array[0])
 
     @property
     def y(self) -> float:
         """Y coordinate of the point"""
-        return float(self._coords[1])
+        return float(self.array[1])
 
     @property
     def z(self) -> float:
         """Z coordinate of the point"""
-        return float(self._coords[2])
+        return float(self.array[2])
 
     @x.setter
     def x(self, value: float) -> None:
         """Set X coordinate"""
-        self._coords[0] = float(value)
+        self.array[0] = float(value)
 
     @y.setter
     def y(self, value: float) -> None:
         """Set Y coordinate"""
-        self._coords[1] = float(value)
+        self.array[1] = float(value)
 
     @z.setter
     def z(self, value: float) -> None:
         """Set Z coordinate"""
-        self._coords[2] = float(value)
+        self.array[2] = float(value)
 
     def distance_to(self, other: 'Point') -> float:
         """
@@ -126,7 +118,7 @@ class Point:
         """
         if not isinstance(other, Point):
             raise TypeError("distance_to requires a Point")
-        return float(np.linalg.norm(self._coords - other._coords))
+        return float(np.linalg.norm(self.array - other.array))
 
     def distance_squared_to(self, other: 'Point') -> float:
         """
@@ -140,14 +132,23 @@ class Point:
         """
         if not isinstance(other, Point):
             raise TypeError("distance_squared_to requires a Point")
-        diff = self._coords - other._coords
+        diff = self.array - other.array
         return float(np.dot(diff, diff))
 
-    def to_tuple(self) -> tuple[float, float, float]:
+    def to_array(self) -> np.ndarray:
         """
-        Convert point to tuple
+        Convert point to numpy array
 
         Returns:
-            Tuple (x, y, z) of coordinates
+            numpy array of shape (3,) containing (x, y, z) coordinates
         """
-        return float(self._coords[0]), float(self._coords[1]), float(self._coords[2])
+        return self.array.copy()
+
+    def to_array_homogeneous(self) -> np.ndarray:
+        """
+        Convert point to homogeneous coordinates as a numpy array
+
+        Returns:
+            numpy array of shape (4,) containing (x, y, z, 1)
+        """
+        return np.array([self.x, self.y, self.z, 1.0], dtype=float)

@@ -31,46 +31,46 @@ class Vector:
             arr = np.asarray(x, dtype=float)
             if arr.shape != (3,):
                 raise ValueError("Array-like input must have exactly 3 elements")
-            self._v = arr.copy()
+            self.array = arr.copy()
         else:
             # Scalar initialization with defaults
             y = 0.0 if y is None else y
             z = 0.0 if z is None else z
-            self._v = np.array([float(x), float(y), float(z)], dtype=float)
+            self.array = np.array([float(x), float(y), float(z)], dtype=float)
 
     @property
     def x(self) -> float:
         """X component of the vector"""
-        return float(self._v[0])
+        return float(self.array[0])
 
     @property
     def y(self) -> float:
         """Y component of the vector"""
-        return float(self._v[1])
+        return float(self.array[1])
 
     @property
     def z(self) -> float:
         """Z component of the vector"""
-        return float(self._v[2])
+        return float(self.array[2])
 
 
     def __add__(self, other: 'Vector') -> 'Vector':
         """Vector addition"""
         if not isinstance(other, Vector):
             return NotImplemented
-        return Vector(self._v + other._v)
+        return Vector(self.array + other.array)
 
     def __sub__(self, other: 'Vector') -> 'Vector':
         """Vector subtraction"""
         if not isinstance(other, Vector):
             return NotImplemented
-        return Vector(self._v - other._v)
+        return Vector(self.array - other.array)
 
     def __mul__(self, scalar: Real) -> 'Vector':
         """Scalar multiplication"""
         if not isinstance(scalar, Real):
             return NotImplemented
-        return Vector(self._v * scalar)
+        return Vector(self.array * scalar)
 
     def __rmul__(self, scalar: Real) -> 'Vector':
         """Right scalar multiplication"""
@@ -82,17 +82,17 @@ class Vector:
             return NotImplemented
         if scalar == 0:
             raise ValueError("Cannot divide vector by zero")
-        return Vector(self._v / scalar)
+        return Vector(self.array / scalar)
 
     def __neg__(self) -> 'Vector':
         """Vector negation"""
-        return Vector(-self._v)
+        return Vector(-self.array)
 
     def __eq__(self, other: object) -> bool:
         """Vector equality with tolerance"""
         if not isinstance(other, Vector):
             return NotImplemented
-        return np.allclose(self._v, other._v)
+        return np.allclose(self.array, other.array)
 
     def dot(self, other: 'Vector') -> float:
         """
@@ -106,7 +106,7 @@ class Vector:
         """
         if not isinstance(other, Vector):
             raise TypeError("dot requires a Vector")
-        return float(np.dot(self._v, other._v))
+        return float(np.dot(self.array, other.array))
 
     def cross(self, other: 'Vector') -> 'Vector':
         """
@@ -120,11 +120,11 @@ class Vector:
         """
         if not isinstance(other, Vector):
             raise TypeError("cross requires a Vector")
-        return Vector(np.cross(self._v, other._v))
+        return Vector(np.cross(self.array, other.array))
 
     def magnitude(self) -> float:
         """Calculate the magnitude (length) of the vector"""
-        return float(np.linalg.norm(self._v))
+        return float(np.linalg.norm(self.array))
 
     def normalized(self) -> 'Vector':
         """
@@ -136,18 +136,8 @@ class Vector:
         mag = self.magnitude()
         if mag == 0.0:
             return Vector(0.0, 0.0, 0.0)
-        return Vector(self._v / mag)
+        return Vector(self.array / mag)
 
     def to_array(self) -> np.ndarray:
         """Return a copy of the internal numpy array"""
-        return self._v.copy()
-
-    def to_list(self) -> list[float]:
-        """Return vector as a list [x, y, z]"""
-        return self._v.tolist()
-
-    def __repr__(self) -> str:
-        return f"Vector({self.x}, {self.y}, {self.z})"
-
-    def __str__(self) -> str:
-        return f"({self.x}, {self.y}, {self.z})"
+        return self.array.copy()

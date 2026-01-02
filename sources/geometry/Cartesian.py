@@ -34,9 +34,9 @@ class Cartesian:
         xz_plane_point = xz_plane_point or Point(0.0, 0.0, 1.0)
 
         # Convert to numpy arrays
-        self.origin = np.array(origin.to_tuple())
-        x_point_arr = np.array(x_point.to_tuple())
-        xz_plane_point_arr = np.array(xz_plane_point.to_tuple())
+        self.origin = origin.to_array()
+        x_point_arr = x_point.to_array()
+        xz_plane_point_arr = xz_plane_point.to_array()
 
         # Calculate x-axis unit vector
         x_vec = x_point_arr - self.origin
@@ -70,3 +70,16 @@ class Cartesian:
             f"  z_axis={self.z_axis}\n"
             f")"
         )
+
+    def to_array(self) -> np.ndarray:
+        transform_matrix = np.eye(4)
+
+        # Rotation part: place x, y, z as column vectors
+        transform_matrix[0:3, 0] = self.x_axis
+        transform_matrix[0:3, 1] = self.y_axis
+        transform_matrix[0:3, 2] = self.z_axis
+
+        # Translation part: origin position
+        transform_matrix[0:3, 3] = self.origin
+
+        return transform_matrix
