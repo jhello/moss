@@ -3,7 +3,8 @@ from typing import Final
 from data import Case
 from data.constraint import VertexVertexDistance
 from data.topo import Vertex, Solid
-from geometry import Point, Cartesian
+from geometry.Point import Point
+from geometry.Cartesian import Cartesian
 from operation import distance
 from solver import Status
 from solver.Darwin import DarwinSolver
