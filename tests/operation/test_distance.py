@@ -1,6 +1,6 @@
 import pytest
 
-from data.topo import Vertex
+from sources.data.topo import Vertex
 from sources.geometry import Point
 from sources.operation import distance
 

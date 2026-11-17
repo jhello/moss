@@ -1,13 +1,13 @@
 from typing import Final
 
-from data import Case
-from data.constraint import VertexVertexDistance
-from data.topo import Vertex, Solid
-from geometry.Point import Point
-from geometry.Cartesian import Cartesian
-from operation import distance
-from solver import Status
-from solver.Darwin import DarwinSolver
+from sources.data import Case
+from sources.data.constraint import VertexVertexDistance
+from sources.data.topo import Vertex, Solid
+from sources.geometry.Point import Point
+from sources.geometry.Cartesian import Cartesian
+from sources.operation import distance
+from sources.solver import Status
+from sources.solver.Darwin import DarwinSolver
 
 def test_darwin_solver_basic():
     case = Case('TestCase001', 'A test case for DarwinSolver')

@@ -1,8 +1,7 @@
 from functools import singledispatch
 from typing import Any
 
-from geometry import Cartesian
-from sources.geometry import Point
+from sources.geometry import Cartesian, Point
 
 
 @singledispatch

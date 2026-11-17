@@ -1,7 +1,7 @@
-from data.constraint import VertexVertexDistance
-from data.topo import Solid
-from geometry import Point
-from operation import transform, distance
+from sources.data.constraint import VertexVertexDistance
+from sources.data.topo import Solid
+from sources.geometry import Point
+from sources.operation import transform, distance
 
 
 class VertexVertexDistanceEvaluator:

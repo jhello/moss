@@ -1,7 +1,7 @@
 from functools import singledispatch
 from typing import Any
 
-from data.topo import Vertex
+from sources.data.topo import Vertex
 from sources.geometry import Point
 
 

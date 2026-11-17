@@ -1,5 +1,5 @@
-from data.constraint import Constraint
-from data.topo import Vertex
+from sources.data.constraint import Constraint
+from sources.data.topo import Vertex
 
 
 class VertexVertexDistance(Constraint):

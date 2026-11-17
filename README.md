@@ -10,5 +10,5 @@ python -m pytest
 This command will discover and execute all the test cases defined in the `tests` directory of the `moss` package. Make sure you have `pytest` installed in your Python environment. If you don't have it installed, you can do so using pip:
 
 ```bash
-pip install pytest
+python -m pip install pytest
 ```

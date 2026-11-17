@@ -1,7 +1,7 @@
-from data import Case
-from data.constraint import VertexVertexDistance
-from solver import Status
-from solver.Darwin.evaluator import VertexVertexDistanceEvaluator
+from sources.data import Case
+from sources.data.constraint import VertexVertexDistance
+from sources.solver import Status
+from sources.solver.Darwin.evaluator import VertexVertexDistanceEvaluator
 
 
 class DarwinSolver:

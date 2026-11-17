@@ -1,5 +1,5 @@
-from data.topo import Vertex
-from geometry import Cartesian
+from sources.data.topo import Vertex
+from sources.geometry import Cartesian
 
 
 class Solid:

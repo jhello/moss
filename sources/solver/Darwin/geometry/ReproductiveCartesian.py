@@ -1,6 +1,6 @@
 from typing import List
 
-from geometry import Cartesian, Point
+from sources.geometry import Cartesian, Point
 
 
 class ReproductiveCartesian(Cartesian):

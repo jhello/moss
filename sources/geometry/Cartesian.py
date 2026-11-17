@@ -1,7 +1,7 @@
 import numpy as np
 from typing import Optional
 
-from geometry import Point
+from sources.geometry import Point
 
 
 class Cartesian:
