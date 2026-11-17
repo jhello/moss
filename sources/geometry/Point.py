@@ -4,7 +4,7 @@ from typing import Union
 import numpy as np
 from numpy.typing import ArrayLike
 
-from sources.geometry import Vector
+from sources.geometry.Vector import Vector
 
 
 class Point:
