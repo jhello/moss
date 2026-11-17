@@ -10,6 +10,18 @@ from sources.operation import distance, transform
 from sources.solver import Status
 from sources.solver.Darwin import DarwinSolver
 
+# Population settings can be tuned per test instead of using the production
+# defaults (10000 individuals, 1e-6 convergence threshold).
+SOLVER_PARAMS = dict(
+    max_population=300,
+    offspring_per_individual=2,
+    max_deviation=1.0,
+    convergence_threshold=1e-4,
+    max_iterations=2000,
+    seed=17
+)
+
+
 def test_darwin_solver_basic():
     case = Case('TestCase001', 'A test case for DarwinSolver')
 
@@ -36,11 +48,16 @@ def test_darwin_solver_basic():
     vertices_distance_constraint = VertexVertexDistance(vertex_a, vertex_b, 5.0)
     case.add_constraint(vertices_distance_constraint)
 
-    solver = DarwinSolver(case)
+    solver = DarwinSolver(case, device='cpu', **SOLVER_PARAMS)
     solver.solve()
 
     assert solver.get_status() == Status.SUCCESS
-    
+    assert solver.final_score < SOLVER_PARAMS['convergence_threshold']
+    assert all(
+        stats['population'] <= SOLVER_PARAMS['max_population']
+        for stats in solver.optimizer.generation_stats
+    )
+
     # 优化器更新的是 solid 的坐标系，vertex 的局部坐标不变
     # 需要通过 transform 获取全局坐标后计算距离
     solid_a = case.solids[0]
@@ -49,4 +66,3 @@ def test_darwin_solver_basic():
     global_point_b = transform(vertex_b.point, solid_b.coordinates_system)
     actual_distance = distance(global_point_a, global_point_b)
     assert math.isclose(actual_distance, 5.0, abs_tol=1e-3), f"Expected distance ~5.0, got {actual_distance}"
-

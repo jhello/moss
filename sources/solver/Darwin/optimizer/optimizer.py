@@ -1,10 +1,10 @@
 import numpy as np
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
 
 from sources.data.topo import Solid, Vertex
-from sources.geometry import Cartesian, Point
-from sources.solver.Darwin.geometry import ReproductiveCartesian, ReproduciblePoint
+from sources.geometry import Cartesian
 from sources.solver.Darwin.evaluator import VertexVertexDistanceEvaluator
+from sources.solver.Darwin.geometry import ReproductiveCartesian, ReproduciblePoint
 
 
 def _detect_device() -> str:
@@ -23,15 +23,68 @@ class DarwinOptimizer:
     Evolutionary optimizer that uses reproductive Cartesian coordinate systems
     to minimize constraint scores.
 
-    Supports both GPU (PyTorch CUDA) and CPU computation.
+    A population of candidate solutions is maintained. Every candidate holds the
+    two coordinate systems involved in the constraint; its score is the
+    constraint score of that pair. In each generation every surviving candidate
+    breeds ``offspring_per_individual`` children, the children are scored and
+    sorted, and only the best ``max_population`` candidates survive. All others
+    are eliminated and cannot reproduce again.
+
+    Supports both GPU (PyTorch CUDA) and CPU (NumPy) computation. All tunable
+    parameters are exposed on the constructor so tests can override them.
     """
 
+    # Defaults (may be overridden per instance, see __init__).
     CONVERGENCE_THRESHOLD = 1e-6
     MAX_ITERATIONS = 10000
-    OFFSPRING_PER_GENERATION = 100
+    MAX_POPULATION = 10000
+    OFFSPRING_PER_INDIVIDUAL = 2
     MAX_DEVIATION = 1.0
 
-    def __init__(self, device: Optional[str] = None):
+    # Backwards-compatible alias for the previous constant name.
+    OFFSPRING_PER_GENERATION = OFFSPRING_PER_INDIVIDUAL
+
+    def __init__(
+        self,
+        device: Optional[str] = None,
+        *,
+        max_population: Optional[int] = None,
+        offspring_per_individual: Optional[int] = None,
+        max_deviation: Optional[float] = None,
+        convergence_threshold: Optional[float] = None,
+        max_iterations: Optional[int] = None,
+        seed: Optional[int] = None
+    ):
+        self.max_population = (
+            self.MAX_POPULATION if max_population is None else int(max_population)
+        )
+        self.offspring_per_individual = (
+            self.OFFSPRING_PER_INDIVIDUAL
+            if offspring_per_individual is None
+            else int(offspring_per_individual)
+        )
+        self.max_deviation = (
+            self.MAX_DEVIATION if max_deviation is None else float(max_deviation)
+        )
+        self.convergence_threshold = (
+            self.CONVERGENCE_THRESHOLD
+            if convergence_threshold is None
+            else float(convergence_threshold)
+        )
+        self.max_iterations = (
+            self.MAX_ITERATIONS if max_iterations is None else int(max_iterations)
+        )
+        self.seed = seed
+        self.rng = np.random.default_rng(seed)
+
+        if self.max_population < 1 or self.offspring_per_individual < 1:
+            raise ValueError("max_population and offspring_per_individual must be >= 1")
+        if self.max_deviation < 0:
+            raise ValueError("max_deviation must be >= 0")
+
+        # Per-generation diagnostics: {"generation", "population", "best", "mean"}
+        self.generation_stats: List[dict] = []
+
         self.device = device or _detect_device()
         self._torch = None
         self._use_gpu = False
@@ -42,12 +95,16 @@ class DarwinOptimizer:
         if self.device == 'cuda':
             try:
                 import torch
+                if not torch.cuda.is_available():
+                    raise RuntimeError("CUDA is not available")
                 self._torch = torch
                 self._use_gpu = True
+                self.device = str(torch.device('cuda'))
                 print(f"[DarwinOptimizer] Using GPU (CUDA) on device: {torch.cuda.get_device_name(0)}")
-            except ImportError:
-                print("[DarwinOptimizer] PyTorch not available, falling back to CPU (numpy)")
-                self._device = 'cpu'
+            except (ImportError, RuntimeError) as exc:
+                print(f"[DarwinOptimizer] {exc}, falling back to CPU (numpy)")
+                self.device = 'cpu'
+                self._torch = None
                 self._use_gpu = False
         else:
             print("[DarwinOptimizer] Using CPU (numpy)")
@@ -69,11 +126,76 @@ class DarwinOptimizer:
             vertex2: Second vertex of the constraint
 
         Returns:
-            Tuple of (final_score, iterations)
+            Tuple of (final_score, generations) where ``generations`` is the
+            number of generations that were bred.
         """
-        # Find the two solids involved in this constraint
-        solid1 = None
-        solid2 = None
+        solid1, solid2 = self._find_solids(solids, vertex1, vertex2)
+        if solid1 is None or solid2 is None:
+            print("[DarwinOptimizer] Could not find both solids for constraint, skipping")
+            return evaluator.evaluate(), 0
+
+        # Make sure both coordinate systems can be described by reproducible points.
+        if not isinstance(solid1.coordinates_system, ReproductiveCartesian):
+            solid1.coordinates_system = self._convert_to_reproductive(solid1.coordinates_system)
+        if not isinstance(solid2.coordinates_system, ReproductiveCartesian):
+            solid2.coordinates_system = self._convert_to_reproductive(solid2.coordinates_system)
+
+        p1 = np.array([
+            evaluator.vertex1.point.x, evaluator.vertex1.point.y,
+            evaluator.vertex1.point.z, 1.0
+        ], dtype=np.float64)
+        p2 = np.array([
+            evaluator.vertex2.point.x, evaluator.vertex2.point.y,
+            evaluator.vertex2.point.z, 1.0
+        ], dtype=np.float64)
+        target = float(evaluator.distance)
+
+        # Generation 1: fill the population from the seed pair.
+        seed = self._points_from_cartesian(
+            solid1.coordinates_system, solid2.coordinates_system
+        )
+        population = self._reproduce(seed, self.max_population)
+        scores = self._evaluate_scores(population, p1, p2, target)
+        population, scores = self._select_survivors(population, scores)
+        best_points = population[0].copy()
+        best_score = float(scores[0])
+
+        self.generation_stats = []
+        self._record_generation(1, population, scores)
+
+        generations = 1
+        while (
+            best_score >= self.convergence_threshold
+            and generations < self.max_iterations
+        ):
+            generations += 1
+            offspring = self._reproduce(population, self.offspring_per_individual)
+            scores = self._evaluate_scores(offspring, p1, p2, target)
+            population, scores = self._select_survivors(offspring, scores)
+
+            if float(scores[0]) < best_score:
+                best_score = float(scores[0])
+                best_points = population[0].copy()
+
+            self._record_generation(generations, population, scores)
+
+        # Apply the best candidate ever found (the elite never breeds, but it is
+        # always the one written back to the solids).
+        solid1.coordinates_system, solid2.coordinates_system = \
+            self._cartesian_from_points(best_points)
+
+        if best_score < self.convergence_threshold:
+            print(f"[DarwinOptimizer] Converged at generation {generations} "
+                  f"with score {best_score:.2e}")
+        else:
+            print(f"[DarwinOptimizer] Max generations ({self.max_iterations}) "
+                  f"reached. Final score: {best_score:.2e}")
+
+        return best_score, generations
+
+    @staticmethod
+    def _find_solids(solids, vertex1, vertex2):
+        solid1 = solid2 = None
         for solid in solids:
             if vertex1 in solid.vertices:
                 solid1 = solid
@@ -81,203 +203,187 @@ class DarwinOptimizer:
                 solid2 = solid
             if solid1 is not None and solid2 is not None:
                 break
+        return solid1, solid2
 
-        if solid1 is None or solid2 is None:
-            print("[DarwinOptimizer] Could not find both solids for constraint, skipping")
-            return evaluator.evaluate(), 0
+    def _record_generation(self, generation: int, population: np.ndarray,
+                           scores: np.ndarray) -> None:
+        self.generation_stats.append({
+            'generation': generation,
+            'population': int(population.shape[0]),
+            'best': float(scores[0]),
+            'mean': float(np.mean(scores)),
+        })
+        if generation % 100 == 0:
+            print(f"[DarwinOptimizer] Generation {generation}: "
+                  f"best_score = {float(scores[0]):.2e}")
 
-        # Ensure coordinate systems are reproductive
-        if not isinstance(solid1.coordinates_system, ReproductiveCartesian):
-            solid1.coordinates_system = self._convert_to_reproductive(solid1.coordinates_system)
-        if not isinstance(solid2.coordinates_system, ReproductiveCartesian):
-            solid2.coordinates_system = self._convert_to_reproductive(solid2.coordinates_system)
+    # ------------------------------------------------------------------
+    # Population representation
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _defining_points(cartesian: Cartesian) -> np.ndarray:
+        """Return the 3 points defining a coordinate system as an (3, 3) array."""
+        if isinstance(cartesian, ReproductiveCartesian):
+            return np.array([
+                cartesian._origin_point.to_array(),
+                cartesian._x_point.to_array(),
+                cartesian._xz_plane_point.to_array(),
+            ], dtype=np.float64)
+        # Plain Cartesian stores numpy arrays: origin plus unit axis vectors.
+        origin = np.asarray(cartesian.origin, dtype=np.float64)
+        return np.array([
+            origin,
+            origin + cartesian.x_axis,
+            origin + cartesian.z_axis,
+        ], dtype=np.float64)
 
-        best_score = evaluator.evaluate()
-        best_cs1 = self._clone_cartesian(solid1.coordinates_system)
-        best_cs2 = self._clone_cartesian(solid2.coordinates_system)
+    @classmethod
+    def _points_from_cartesian(cls, cs1: Cartesian, cs2: Cartesian) -> np.ndarray:
+        """Pack a pair of coordinate systems into an (1, 6, 3) array.
 
-        iterations = 0
+        The six points are [origin_1, x_point_1, xz_point_1,
+        origin_2, x_point_2, xz_point_2].
+        """
+        return np.stack([
+            np.concatenate([cls._defining_points(cs1), cls._defining_points(cs2)])
+        ]).astype(np.float64)
 
-        for iteration in range(self.MAX_ITERATIONS):
-            iterations += 1
+    @staticmethod
+    def _cartesian_from_points(points: np.ndarray) -> Tuple[ReproductiveCartesian, ReproductiveCartesian]:
+        """Rebuild the two reproductive coordinate systems from a candidate."""
+        o1, x1, z1, o2, x2, z2 = points
+        cs1 = ReproductiveCartesian(
+            origin=ReproduciblePoint(*o1),
+            x_point=ReproduciblePoint(*x1),
+            xz_plane_point=ReproduciblePoint(*z1)
+        )
+        cs2 = ReproductiveCartesian(
+            origin=ReproduciblePoint(*o2),
+            x_point=ReproduciblePoint(*x2),
+            xz_plane_point=ReproduciblePoint(*z2)
+        )
+        return cs1, cs2
 
-            # Check convergence
-            if best_score < self.CONVERGENCE_THRESHOLD:
-                print(f"[DarwinOptimizer] Converged at iteration {iterations} with score {best_score:.2e}")
-                solid1.coordinates_system = best_cs1
-                solid2.coordinates_system = best_cs2
-                return best_score, iterations
+    def _reproduce(self, population: np.ndarray, n_offspring: int) -> np.ndarray:
+        """Breed ``n_offspring`` children from every individual.
 
-            # Generate offspring for both coordinate systems
-            offspring1 = solid1.coordinates_system.reproduce(
-                self.OFFSPRING_PER_GENERATION, self.MAX_DEVIATION
-            )
-            offspring2 = solid2.coordinates_system.reproduce(
-                self.OFFSPRING_PER_GENERATION, self.MAX_DEVIATION
-            )
+        Returns an array of shape (population_size * n_offspring, 6, 3).
+        The same RNG is used for both CPU and GPU runs, which makes the
+        convergence comparison reproducible.
+        """
+        total = population.shape[0] * n_offspring
+        noise = self.rng.uniform(
+            -self.max_deviation, self.max_deviation, size=(total, 6, 3)
+        )
+        return np.repeat(population, n_offspring, axis=0) + noise
 
-            # Evaluate all offspring combinations and find the best
-            generation_best_score = best_score
-            generation_best_idx1 = 0
-            generation_best_idx2 = 0
+    def _select_survivors(self, population: np.ndarray, scores: np.ndarray):
+        """Keep only the best ``max_population`` candidates (truncation selection)."""
+        keep = min(self.max_population, population.shape[0])
+        order = np.argsort(scores)[:keep]
+        return population[order], scores[order]
 
-            if self._use_gpu:
-                generation_best_score, generation_best_idx1, generation_best_idx2 = \
-                    self._gpu_evaluate_offspring(
-                        evaluator, solids, offspring1, offspring2,
-                        best_score, solid1, solid2
-                    )
-            else:
-                generation_best_score, generation_best_idx1, generation_best_idx2 = \
-                    self._cpu_evaluate_offspring(
-                        evaluator, solids, offspring1, offspring2,
-                        best_score, solid1, solid2
-                    )
+    # ------------------------------------------------------------------
+    # Batched scoring
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _numpy_matrices(points: np.ndarray):
+        """Vectorized equivalent of Cartesian.to_array() for (N, 3) point triples."""
+        origin = points[:, 0, :]
+        x_point = points[:, 1, :]
+        xz_point = points[:, 2, :]
 
-            # Update best if we found a better solution
-            if generation_best_score < best_score:
-                best_score = generation_best_score
-                best_cs1 = self._clone_cartesian(offspring1[generation_best_idx1])
-                best_cs2 = self._clone_cartesian(offspring2[generation_best_idx2])
-                solid1.coordinates_system = offspring1[generation_best_idx1]
-                solid2.coordinates_system = offspring2[generation_best_idx2]
+        x_vec = x_point - origin
+        x_norm = np.linalg.norm(x_vec, axis=1, keepdims=True)
+        x_axis = x_vec / np.maximum(x_norm, 1e-15)
 
-            if iteration % 1000 == 0:
-                print(f"[DarwinOptimizer] Iteration {iteration}: best_score = {best_score:.2e}")
+        y_vec = np.cross(xz_point - origin, x_axis)
+        y_norm = np.linalg.norm(y_vec, axis=1, keepdims=True)
+        y_axis = y_vec / np.maximum(y_norm, 1e-15)
+        z_axis = np.cross(x_axis, y_axis)
 
-        # Max iterations reached
-        print(f"[DarwinOptimizer] Max iterations ({self.MAX_ITERATIONS}) reached. Final score: {best_score:.2e}")
-        solid1.coordinates_system = best_cs1
-        solid2.coordinates_system = best_cs2
-        return best_score, iterations
+        matrices = np.zeros((points.shape[0], 4, 4), dtype=np.float64)
+        matrices[:, :3, 0] = x_axis
+        matrices[:, :3, 1] = y_axis
+        matrices[:, :3, 2] = z_axis
+        matrices[:, :3, 3] = origin
+        matrices[:, 3, 3] = 1.0
 
-    def _gpu_evaluate_offspring(
-        self,
-        evaluator,
-        solids: List[Solid],
-        offspring1: List[ReproductiveCartesian],
-        offspring2: List[ReproductiveCartesian],
-        best_score: float,
-        solid1: Solid,
-        solid2: Solid
-    ) -> Tuple[float, int, int]:
-        """GPU-accelerated offspring evaluation using PyTorch batched matrix operations."""
-        torch = self._torch
+        valid = (x_norm[:, 0] > 1e-9) & (y_norm[:, 0] > 1e-9)
+        return matrices, valid
 
-        # Build batched transform matrices on GPU
-        n = len(offspring1)
-        matrices1 = torch.stack([
-            torch.tensor(off.to_array(), dtype=torch.float32)
-            for off in offspring1
-        ]).cuda()
+    @staticmethod
+    def _torch_matrices(torch, points):
+        origin = points[:, 0, :]
+        x_point = points[:, 1, :]
+        xz_point = points[:, 2, :]
 
-        matrices2 = torch.stack([
-            torch.tensor(off.to_array(), dtype=torch.float32)
-            for off in offspring2
-        ]).cuda()
+        x_vec = x_point - origin
+        x_norm = torch.linalg.norm(x_vec, dim=1, keepdim=True)
+        x_axis = x_vec / torch.clamp(x_norm, min=1e-15)
 
-        # Local points (from evaluator's constraint vertices)
-        p1_local = torch.tensor(
-            [evaluator.vertex1.point.x, evaluator.vertex1.point.y, evaluator.vertex1.point.z, 1.0],
-            dtype=torch.float32
-        ).cuda()
+        y_vec = torch.cross(xz_point - origin, x_axis, dim=1)
+        y_norm = torch.linalg.norm(y_vec, dim=1, keepdim=True)
+        y_axis = y_vec / torch.clamp(y_norm, min=1e-15)
+        z_axis = torch.cross(x_axis, y_axis, dim=1)
 
-        p2_local = torch.tensor(
-            [evaluator.vertex2.point.x, evaluator.vertex2.point.y, evaluator.vertex2.point.z, 1.0],
-            dtype=torch.float32
-        ).cuda()
+        matrices = torch.zeros(
+            (points.shape[0], 4, 4), dtype=points.dtype, device=points.device
+        )
+        matrices[:, :3, 0] = x_axis
+        matrices[:, :3, 1] = y_axis
+        matrices[:, :3, 2] = z_axis
+        matrices[:, :3, 3] = origin
+        matrices[:, 3, 3] = 1.0
 
-        # Batched transform: (N, 4, 4) @ (4, 1) -> (N, 4, 1)
-        global1 = (matrices1 @ p1_local.unsqueeze(1)).squeeze(2)  # (N, 4)
-        global2 = (matrices2 @ p2_local.unsqueeze(1)).squeeze(2)  # (N, 4)
+        valid = (x_norm[:, 0] > 1e-9) & (y_norm[:, 0] > 1e-9)
+        return matrices, valid
 
-        # Extract xyz
-        xyz1 = global1[:, :3]
-        xyz2 = global2[:, :3]
+    def _evaluate_scores(
+        self, population: np.ndarray, p1: np.ndarray, p2: np.ndarray, target: float
+    ) -> np.ndarray:
+        """Score every candidate. Returns a numpy array of shape (N,)."""
+        if self._use_gpu:
+            torch = self._torch
+            device = torch.device(self.device)
+            points = torch.from_numpy(population).to(device=device, dtype=torch.float32)
+            local1 = torch.from_numpy(p1).to(device=device, dtype=torch.float32)
+            local2 = torch.from_numpy(p2).to(device=device, dtype=torch.float32)
 
-        # We need to evaluate all N x N combinations
-        # xyz1: (N, 3), xyz2: (N, 3)
-        # diff[i,j] = xyz1[i] - xyz2[j]
-        diff = xyz1.unsqueeze(1) - xyz2.unsqueeze(0)  # (N, N, 3)
-        distances = torch.norm(diff, dim=2)  # (N, N)
-        scores = torch.abs(distances - evaluator.distance)  # (N, N)
+            m1, valid1 = self._torch_matrices(torch, points[:, :3, :])
+            m2, valid2 = self._torch_matrices(torch, points[:, 3:, :])
 
-        min_score = scores.min().item()
-        min_idx = scores.argmin().item()
-        idx1 = min_idx // n
-        idx2 = min_idx % n
+            g1 = torch.einsum('nij,j->ni', m1, local1)
+            g2 = torch.einsum('nij,j->ni', m2, local2)
+            diff = g1[:, :3] - g2[:, :3]
+            scores = torch.abs(torch.linalg.norm(diff, dim=1) - target)
+            scores[~(valid1 & valid2)] = float('inf')
+            return scores.cpu().numpy()
 
-        return min_score, idx1, idx2
+        m1, valid1 = self._numpy_matrices(population[:, :3, :])
+        m2, valid2 = self._numpy_matrices(population[:, 3:, :])
 
-    def _cpu_evaluate_offspring(
-        self,
-        evaluator,
-        solids: List[Solid],
-        offspring1: List[ReproductiveCartesian],
-        offspring2: List[ReproductiveCartesian],
-        best_score: float,
-        solid1: Solid,
-        solid2: Solid
-    ) -> Tuple[float, int, int]:
-        """CPU offspring evaluation using vectorized numpy operations."""
-        n = len(offspring1)
+        g1 = np.einsum('nij,j->ni', m1, p1)
+        g2 = np.einsum('nij,j->ni', m2, p2)
+        diff = g1[:, :3] - g2[:, :3]
+        scores = np.abs(np.linalg.norm(diff, axis=1) - target)
+        scores[~(valid1 & valid2)] = float('inf')
+        return scores
 
-        # Build batched transform matrices
-        matrices1 = np.array([off.to_array() for off in offspring1])  # (N, 4, 4)
-        matrices2 = np.array([off.to_array() for off in offspring2])  # (N, 4, 4)
-
-        # Local homogeneous points
-        p1_local = np.array([
-            evaluator.vertex1.point.x,
-            evaluator.vertex1.point.y,
-            evaluator.vertex1.point.z,
-            1.0
-        ])
-        p2_local = np.array([
-            evaluator.vertex2.point.x,
-            evaluator.vertex2.point.y,
-            evaluator.vertex2.point.z,
-            1.0
-        ])
-
-        # Batched transform
-        global1 = (matrices1 @ p1_local)  # (N, 4)
-        global2 = (matrices2 @ p2_local)  # (N, 4)
-
-        xyz1 = global1[:, :3]  # (N, 3)
-        xyz2 = global2[:, :3]  # (N, 3)
-
-        # All pairs: (N, N, 3)
-        diff = xyz1[:, np.newaxis, :] - xyz2[np.newaxis, :, :]
-        distances = np.sqrt(np.sum(diff ** 2, axis=2))  # (N, N)
-        scores = np.abs(distances - evaluator.distance)  # (N, N)
-
-        min_score = float(scores.min())
-        min_idx = int(scores.argmin())
-        idx1 = min_idx // n
-        idx2 = min_idx % n
-
-        return min_score, idx1, idx2
-
+    # ------------------------------------------------------------------
+    # Helpers kept from the original implementation
+    # ------------------------------------------------------------------
     @staticmethod
     def _convert_to_reproductive(cartesian: Cartesian) -> ReproductiveCartesian:
         """Convert a regular Cartesian to a ReproductiveCartesian."""
-        origin = ReproduciblePoint(cartesian.origin[0], cartesian.origin[1], cartesian.origin[2])
-        x_point = ReproduciblePoint(
-            cartesian.origin[0] + cartesian.x_axis[0],
-            cartesian.origin[1] + cartesian.x_axis[1],
-            cartesian.origin[2] + cartesian.x_axis[2]
+        origin = np.asarray(cartesian.origin, dtype=float)
+        return ReproductiveCartesian(
+            origin=ReproduciblePoint(*origin),
+            x_point=ReproduciblePoint(*(origin + cartesian.x_axis)),
+            xz_plane_point=ReproduciblePoint(*(origin + cartesian.z_axis))
         )
-        xz_plane_point = ReproduciblePoint(
-            cartesian.origin[0] + cartesian.z_axis[0],
-            cartesian.origin[1] + cartesian.z_axis[1],
-            cartesian.origin[2] + cartesian.z_axis[2]
-        )
-        return ReproductiveCartesian(origin=origin, x_point=x_point, xz_plane_point=xz_plane_point)
 
-    @staticmethod
-    def _clone_cartesian(cartesian: Cartesian) -> ReproductiveCartesian:
+    @classmethod
+    def _clone_cartesian(cls, cartesian: Cartesian) -> ReproductiveCartesian:
         """Create a clone of a ReproductiveCartesian."""
-        if isinstance(cartesian, ReproductiveCartesian):
-            return DarwinOptimizer._convert_to_reproductive(cartesian)
-        return DarwinOptimizer._convert_to_reproductive(cartesian)
+        return cls._convert_to_reproductive(cartesian)
